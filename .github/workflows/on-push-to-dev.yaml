@@ -1,0 +1,91 @@
+name: "Build Docker image & push to Docker Hub on push to develop branch"
+
+on:
+  workflow_call:
+    inputs:
+      repository-name: 
+        description: "El nombre del repositorio"
+        required: true
+        type: string
+
+    secrets:
+        DOCKER_USERNAME:  
+          description: "El nombre de usuario de DockerHub"
+          required: true
+        DOCKER_ACCESS_TOKEN:
+          description: "El token de acceso de DockerHub"
+          required: true
+        PAT:
+          description: "Personal Access Token para acceder al repositorio de manifiestos"
+          required: true
+
+jobs:
+  docker:
+    name: Build Docker image and push to Docker Hub
+    runs-on: ubuntu-latest
+    env:
+      REPO_NAME: ${{ inputs.repository-name }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_ACCESS_TOKEN }}
+
+      - name: Semantic versioning
+        id: semver
+        uses: paulhatch/semantic-version@v5.4.0
+        with:
+          bump_each_commit: true
+          branch: develop
+          tag_prefix: "v"
+          debug: true
+
+      - name: Save version number as environment variable
+        run: echo "VERSION=${{ steps.semver.outputs.version_tag }}" >> $GITHUB_ENV
+
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: ${{ secrets.DOCKER_USERNAME }}/${{ env.REPO_NAME }}:${{ env.VERSION }},${{ secrets.DOCKER_USERNAME }}/${{ env.REPO_NAME }}:latest
+
+      - name: Checkout to Manifests Repo
+        uses: actions/checkout@v3
+        with:
+          repository: 'Practicas-DevOps/ping-pong-app'
+          ref: 'main'
+          token: ${{ secrets.PAT }}
+      - name: Setup Git Config
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "<>"
+
+      - name: Set Up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip' # caching pip dependencies
+      - run: pip install -r ./scripts/requirements.txt
+
+      - name: Set Image Tag
+        run: python ./scripts/set_tag.py -y ./application/overlays/dev/${{ env.REPO_NAME }}/kustomization.yaml -n ${{ env.VERSION }}
+
+      - name: Commit and push changes
+        run: |
+          git add .
+          git commit -m "Update image tag of ${{env.REPO_NAME }} to ${{ env.VERSION }}"
+          git push
